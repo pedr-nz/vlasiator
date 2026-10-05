@@ -316,7 +316,6 @@ namespace FieldTracing {
 
          // Normalize
          Real norm = 1. / sqrt(b[0]*b[0] + b[1]*b[1] + b[2]*b[2]);
-#pragma omp parallel for
          for (int c = 0; c < 3; c++) {
             b[c] = b[c] * norm;
          }
