@@ -77,6 +77,10 @@ namespace FieldTracing {
       std::vector<Real> nodeDistance(nodes.size(), std::numeric_limits<Real>::max()); // For reduction of node coordinate in case of multiple hits
       std::vector<int> nodeNeedsContinuedTracing(nodes.size(), 1); // Flag, whether tracing needs to continue on another task
       std::vector<std::array<Real, 3>> nodeTracingCoordinates(nodes.size()); // In-flight node upmapping coordinates (for global reduction)
+
+#pragma omp parallel
+ { // TODO: Maybe memset?
+#pragma omp for
       for (uint n = 0; n < nodes.size(); n++) {
          nodeTracingCoordinates.at(n) = nodes.at(n).x;
          nodes.at(n).haveCouplingData = 0;
@@ -85,6 +89,7 @@ namespace FieldTracing {
             nodes.at(n).parameters.at(ionosphereParameters::UPMAPPED_BX + c) = 0;
          }
       }
+ }
       bool anyNodeNeedsTracing;
 
       TracingFieldFunction<Real> tracingFullField = [&perb, &dperb, &technical, &fsgrid](std::array<Real, 3>& r, const bool alongB, std::array<Real, 3>& b) -> bool {
@@ -204,6 +209,9 @@ namespace FieldTracing {
             MPI_Allreduce(nodeTracingCoordinates.data(), sumNodeTracingCoordinates.data(), 3*nodes.size(), MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
             MPI_Allreduce(nodeTracingStepSize.data(), reducedNodeTracingStepSize.data(), nodes.size(), MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
          }
+#pragma omp parallel
+ {
+#pragma omp for
          for (uint n = 0; n < nodes.size(); n++) {
             if (sumNodeNeedsContinuedTracing[n] > 0) {
                anyNodeNeedsTracing = true;
@@ -216,7 +224,7 @@ namespace FieldTracing {
             }
             nodeTracingStepSize[n] = reducedNodeTracingStepSize[n];
          }
-
+ }
       } while (anyNodeNeedsTracing);
 
       logFile << "(fieldtracing) fsgrid coupling traced in " << itCount << " iterations of the tracing loop." << endl;
@@ -237,7 +245,9 @@ namespace FieldTracing {
       // And coupling rank number
       std::vector<int> sendCouplingNum(nodes.size());
       std::vector<int> reducedCouplingNum(nodes.size());
-
+#pragma omp parallel
+{
+#pragma omp for
       for (uint n = 0; n < nodes.size(); n++) {
          SBC::SphericalTriGrid::Node& no = nodes[n];
          // Discard false hits from cells that are further out from the node
@@ -252,6 +262,7 @@ namespace FieldTracing {
             SBC::ionosphereGrid.isCouplingInwards = true;
          }
 
+	 //TODO: put them under another omp loop?
          sendUpmappedB[3*n]   = no.parameters[ionosphereParameters::UPMAPPED_BX];
          sendUpmappedB[3*n+1] = no.parameters[ionosphereParameters::UPMAPPED_BY];
          sendUpmappedB[3*n+2] = no.parameters[ionosphereParameters::UPMAPPED_BZ];
@@ -260,6 +271,7 @@ namespace FieldTracing {
          sendxMapped[3*n+2] = no.xMapped[2];
          sendCouplingNum[n] = no.haveCouplingData;
       }
+}
       if (sizeof(Real) == sizeof(double)) {
          MPI_Allreduce(sendUpmappedB.data(), reducedUpmappedB.data(), 3*nodes.size(), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
          MPI_Allreduce(sendxMapped.data(), reducedxMapped.data(), 3*nodes.size(), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -269,6 +281,9 @@ namespace FieldTracing {
       }
       MPI_Allreduce(sendCouplingNum.data(), reducedCouplingNum.data(), nodes.size(), MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
+#pragma omp parallel
+{
+#pragma omp for
       for (uint n = 0; n < nodes.size(); n++) {
          SBC::SphericalTriGrid::Node& no = nodes[n];
 
@@ -283,6 +298,8 @@ namespace FieldTracing {
          no.xMapped[1] = reducedxMapped[3*n+1] / reducedCouplingNum[n];
          no.xMapped[2] = reducedxMapped[3*n+2] / reducedCouplingNum[n];
       }
+}
+      phiprof::print(MPI_COMM_WORLD,"fieldtracing");
    }
 
    /*! Calculate mapping between ionospheric nodes and Vlasov grid cells.
@@ -312,6 +329,7 @@ namespace FieldTracing {
 
          // Normalize
          Real norm = 1. / sqrt(b[0]*b[0] + b[1]*b[1] + b[2]*b[2]);
+#pragma omp parallel for
          for (int c = 0; c < 3; c++) {
             b[c] = b[c] * norm;
          }
